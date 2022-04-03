@@ -50,10 +50,10 @@ type RequestMessageSupplier func() ([]byte, error)
 // method, whose signature is only slightly different.
 //
 // Deprecated: use InvokeRPC instead.
-func InvokeRpc(ctx context.Context, source DescriptorSource, cc *grpc.ClientConn, methodName string,
+func InvokeRpc(ctx context.Context, source DescriptorSource, cc *grpc.ClientConn, prefixPath string, methodName string,
 	headers []string, handler InvocationEventHandler, requestData RequestMessageSupplier) error {
 
-	return InvokeRPC(ctx, source, cc, methodName, headers, handler, func(m proto.Message) error {
+	return InvokeRPC(ctx, source, cc, prefixPath, methodName, headers, handler, func(m proto.Message) error {
 		// New function is almost identical, but the request supplier function works differently.
 		// So we adapt the logic here to maintain compatibility.
 		data, err := requestData()
@@ -84,7 +84,7 @@ type RequestSupplier func(proto.Message) error
 // be thread-safe. This is because the requestData function may be called from a different goroutine
 // than the one invoking event callbacks. (This only happens for bi-directional streaming RPCs, where
 // one goroutine sends request messages and another consumes the response messages).
-func InvokeRPC(ctx context.Context, source DescriptorSource, ch grpcdynamic.Channel, methodName string,
+func InvokeRPC(ctx context.Context, source DescriptorSource, ch grpcdynamic.Channel, prefixPath string, methodName string,
 	headers []string, handler InvocationEventHandler, requestData RequestSupplier) error {
 
 	md := MetadataFromHeaders(headers)
@@ -140,17 +140,17 @@ func InvokeRPC(ctx context.Context, source DescriptorSource, ch grpcdynamic.Chan
 	defer cancel()
 
 	if mtd.IsClientStreaming() && mtd.IsServerStreaming() {
-		return invokeBidi(ctx, stub, mtd, handler, requestData, req)
+		return invokeBidi(ctx, stub, prefixPath, mtd, handler, requestData, req)
 	} else if mtd.IsClientStreaming() {
-		return invokeClientStream(ctx, stub, mtd, handler, requestData, req)
+		return invokeClientStream(ctx, stub, prefixPath, mtd, handler, requestData, req)
 	} else if mtd.IsServerStreaming() {
-		return invokeServerStream(ctx, stub, mtd, handler, requestData, req)
+		return invokeServerStream(ctx, stub, prefixPath, mtd, handler, requestData, req)
 	} else {
-		return invokeUnary(ctx, stub, mtd, handler, requestData, req)
+		return invokeUnary(ctx, stub, prefixPath, mtd, handler, requestData, req)
 	}
 }
 
-func invokeUnary(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
+func invokeUnary(ctx context.Context, stub grpcdynamic.Stub, prefixPath string, md *desc.MethodDescriptor, handler InvocationEventHandler,
 	requestData RequestSupplier, req proto.Message) error {
 
 	err := requestData(req)
@@ -170,7 +170,7 @@ func invokeUnary(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDesc
 	// Now we can actually invoke the RPC!
 	var respHeaders metadata.MD
 	var respTrailers metadata.MD
-	resp, err := stub.InvokeRpc(ctx, md, req, grpc.Trailer(&respTrailers), grpc.Header(&respHeaders))
+	resp, err := stub.InvokeRpc(ctx, prefixPath, md, req, grpc.Trailer(&respTrailers), grpc.Header(&respHeaders))
 
 	stat, ok := status.FromError(err)
 	if !ok {
@@ -190,11 +190,11 @@ func invokeUnary(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDesc
 	return nil
 }
 
-func invokeClientStream(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
+func invokeClientStream(ctx context.Context, stub grpcdynamic.Stub, prefixPath string, md *desc.MethodDescriptor, handler InvocationEventHandler,
 	requestData RequestSupplier, req proto.Message) error {
 
 	// invoke the RPC!
-	str, err := stub.InvokeRpcClientStream(ctx, md)
+	str, err := stub.InvokeRpcClientStream(ctx, prefixPath, md)
 
 	// Upload each request message in the stream
 	var resp proto.Message
@@ -244,7 +244,7 @@ func invokeClientStream(ctx context.Context, stub grpcdynamic.Stub, md *desc.Met
 	return nil
 }
 
-func invokeServerStream(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
+func invokeServerStream(ctx context.Context, stub grpcdynamic.Stub, prefixPath string, md *desc.MethodDescriptor, handler InvocationEventHandler,
 	requestData RequestSupplier, req proto.Message) error {
 
 	err := requestData(req)
@@ -262,7 +262,7 @@ func invokeServerStream(ctx context.Context, stub grpcdynamic.Stub, md *desc.Met
 	}
 
 	// Now we can actually invoke the RPC!
-	str, err := stub.InvokeRpcServerStream(ctx, md, req)
+	str, err := stub.InvokeRpcServerStream(ctx, prefixPath, md, req)
 
 	if respHeaders, err := str.Header(); err == nil {
 		handler.OnReceiveHeaders(respHeaders)
@@ -293,14 +293,14 @@ func invokeServerStream(ctx context.Context, stub grpcdynamic.Stub, md *desc.Met
 	return nil
 }
 
-func invokeBidi(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
+func invokeBidi(ctx context.Context, stub grpcdynamic.Stub, prefixPath string, md *desc.MethodDescriptor, handler InvocationEventHandler,
 	requestData RequestSupplier, req proto.Message) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// invoke the RPC!
-	str, err := stub.InvokeRpcBidiStream(ctx, md)
+	str, err := stub.InvokeRpcBidiStream(ctx, prefixPath, md)
 
 	var wg sync.WaitGroup
 	var sendErr atomic.Value
